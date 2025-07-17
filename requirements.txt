@@ -1,0 +1,3 @@
+cloudscraper
+validators
+requests
