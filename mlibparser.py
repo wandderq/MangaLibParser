@@ -14,7 +14,6 @@ IMGLIB_URL = 'https://img2.imglib.info/'
 REQUEST_ATTEMPTS_LIMIT = 3
 
 logger = lg.getLogger('mlibparser')
-logger.setLevel(lg.INFO)
 
 formatter = lg.Formatter('[%(asctime)s: %(levelname)s] [%(name)s] %(message)s')
 
@@ -22,6 +21,7 @@ stream_handler = lg.StreamHandler(stream=sys.stdout)
 stream_handler.setFormatter(formatter)
 
 class InvalidUrlError(Exception): ...
+class InvalidChaptersError(Exception): ...
 class MangaLibParserError(Exception): ...
 
 class MangaLibParser:
@@ -154,10 +154,83 @@ class MangaLibParser:
         
 def main() -> None:
     logger.addHandler(stream_handler)
-    logger.setLevel(lg.DEBUG)
     
+    argparser = ArgumentParser(
+        description='Simple mangalib.me manga parser',
+        epilog=f"""For example:
+        \'python {sys.argv[0]} https://mangalib.me/ru/manga/3595--kimetsu-no-yaiba -c 2-13 -iv\'
+        downloads \'Kimetsu no Yaiba\' chapters from 2 to 13, shows manga info and debug logs"""
+    )
+    
+    argparser.add_argument('url', type=str, help='Url to mnga page. Ex: https://mangalib.me/ru/manga/7965--chainsaw-man')
+    argparser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode. Shows debug logs')
+    argparser.add_argument('-q', '--quiet', action='store_true', help='Quiet mode. Shows only warn/err/crit logs')
+    
+    argparser.add_argument('-c', '--chapters', default=[], help='Chapters to download (number or from-to range). Ex: 1-100')
+    argparser.add_argument('-i', '--info', action='store_true', help='Shows manga info')
+    argparser.add_argument('-o', '--output-dir', default='Manga', type=str, help='Output directory, defaults setted to \'Manga\'. Downloading like this: /output/path/manga-name/chapters... ')
+    
+    args = argparser.parse_args()
     mlp = MangaLibParser()
-    mlp.download('https://mangalib.me/ru/manga/7965--chainsaw-man', [i for i in range(1, 11)])
+    
+    logger.setLevel(lg.WARNING if args.quiet else lg.DEBUG if args.verbose else lg.INFO)
+    logger.debug('Startting args parsing')
+    
+    if not args.chapters and not args.info:
+        logger.warning('Nothing to do!')
+    
+    if args.info:
+        logger.info('Getting manga info...')
+        stats = mlp.get_manga_stats(
+            manga_url=args.url,
+        )
+        data = stats['data']
+        
+        manga_id = data['id']
+        manga_name = data['name']
+        manga_rus_name = data['rus_name']
+        manga_eng_name = data['eng_name']
+        manga_age_restriction = data['ageRestriction']['label']
+        manga_is_licensed = data['is_licensed']
+        manga_status = data['status']['label']
+        manga_release = data['releaseDateString']
+        
+        print(f"""
+== \'{manga_eng_name}\' stats ==
+
+ID              : {manga_id}
+Name            : {manga_name}
+Russian name    : {manga_rus_name}
+English name    : {manga_eng_name}
+Age restriction : {manga_age_restriction}
+Is licensed     : {manga_is_licensed}
+Status          : {manga_status}
+Release date    : {manga_release}
+             """)
+                
+    if args.chapters:
+        chapters = str(args.chapters).strip()
+        logger.info(f'Setted chapter(s): {chapters}')
+        
+        parts = chapters.split('-')
+        
+        if (len(parts) not in (1,2) or not all([i.isdigit() for i in parts]) or int(parts[0]) < 1):
+            raise InvalidChaptersError(f'Invalid chapter(s) integer/range: {chapters}')
+        
+        if len(parts) == 1:
+            mlp.download(
+                manga_url=args.url,
+                chapters=[int(parts[0])],
+            )
+        
+        elif len(parts) == 2:
+            mlp.download(
+                manga_url=args.url,
+                chapters=[i for i in range(int(parts[0]), int(parts[1]) + 1)]
+            )
+            
+
+    
     
 if __name__ == '__main__':
     main()
