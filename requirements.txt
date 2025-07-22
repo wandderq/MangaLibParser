@@ -1,3 +1,4 @@
 cloudscraper
 validators
 requests
+pillow

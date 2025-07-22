@@ -9,6 +9,8 @@ import logging as lg
 from requests import RequestException
 from argparse import ArgumentParser
 
+from pdf_saver import save_chapter_as_pdf
+
 MANGALIB_API_URL = 'https://api2.mangalib.me/api/manga'
 IMGLIB_URL = 'https://img2.imglib.info/'
 REQUEST_ATTEMPTS_LIMIT = 3
@@ -113,6 +115,7 @@ class MangaLibParser:
             manga_url: str,
             chapters: list,
             output_dir: str = 'Manga',
+            pdf: bool = False
         ) -> None:
         
         if not chapters:
@@ -143,11 +146,17 @@ class MangaLibParser:
                 chapter_orig_volume = chapter_info['volume']
                 
                 chapter_dir_name = f'Chapter {chapter_orig_number}' +  (f' - {chapter_orig_name}' if str(chapter_orig_name).strip() else '')
+                if os.path.exists(os.path.join(manga_dir, f'{chapter_dir_name}.pdf')) and pdf:
+                    logger.debug(f'Chapter {chapter} alreday downloaded in pdf format')
+                    
                 chapter_dir = os.path.join(manga_dir, chapter_dir_name)
                 os.makedirs(chapter_dir, exist_ok=True)
                 
                 pages = self.__get_chapter_pages(url_slug, chapter_orig_volume, chapter_orig_number)
                 self.__download_pages(pages, chapter_dir)
+                
+                if pdf:
+                    save_chapter_as_pdf(chapter_dir=chapter_dir, chapter_name=chapter_dir_name)
                 
             except KeyError:
                 logger.error(f'Chapter {chapter} not found')
@@ -169,6 +178,7 @@ def main() -> None:
     argparser.add_argument('-c', '--chapters', default=[], help='Chapters to download (number or from-to range). Ex: 1-100')
     argparser.add_argument('-i', '--info', action='store_true', help='Shows manga info')
     argparser.add_argument('-o', '--output-dir', default='Manga', type=str, help='Output directory, defaults setted to \'Manga\'. Downloading like this: /output/path/manga-name/chapters... ')
+    argparser.add_argument('--pdf', action='store_true', help='Save manga chapters in .pdf format')
     
     args = argparser.parse_args()
     mlp = MangaLibParser()
@@ -189,16 +199,22 @@ def main() -> None:
         if (len(parts) not in (1,2) or not all([i.isdigit() for i in parts]) or int(parts[0]) < 1):
             raise InvalidChaptersError(f'Invalid chapter(s) integer/range: {chapters}')
         
+        os.makedirs(args.output_dir, exist_ok=True)
+        
         if len(parts) == 1:
             mlp.download(
                 manga_url=args.url,
                 chapters=[int(parts[0])],
+                output_dir=args.output_dir,
+                pdf=args.pdf
             )
         
         elif len(parts) == 2:
             mlp.download(
                 manga_url=args.url,
-                chapters=[i for i in range(int(parts[0]), int(parts[1]) + 1)]
+                chapters=[i for i in range(int(parts[0]), int(parts[1]) + 1)],
+                output_dir=args.output_dir,
+                pdf=args.pdf
             )
             
     if args.info:
