@@ -142,7 +142,7 @@ class MangaLibParser:
                 chapter_orig_number = chapter_info['number']
                 chapter_orig_volume = chapter_info['volume']
                 
-                chapter_dir_name = f'Chapter{chapter_orig_number} - {chapter_orig_name}'
+                chapter_dir_name = f'Chapter {chapter_orig_number}' +  (f' - {chapter_orig_name}' if str(chapter_orig_name).strip() else '')
                 chapter_dir = os.path.join(manga_dir, chapter_dir_name)
                 os.makedirs(chapter_dir, exist_ok=True)
                 
@@ -179,6 +179,28 @@ def main() -> None:
     if not args.chapters and not args.info:
         logger.warning('Nothing to do!')
     
+                
+    if args.chapters:
+        chapters = str(args.chapters).strip()
+        logger.info(f'Setted chapter(s): {chapters}')
+        
+        parts = chapters.split('-')
+        
+        if (len(parts) not in (1,2) or not all([i.isdigit() for i in parts]) or int(parts[0]) < 1):
+            raise InvalidChaptersError(f'Invalid chapter(s) integer/range: {chapters}')
+        
+        if len(parts) == 1:
+            mlp.download(
+                manga_url=args.url,
+                chapters=[int(parts[0])],
+            )
+        
+        elif len(parts) == 2:
+            mlp.download(
+                manga_url=args.url,
+                chapters=[i for i in range(int(parts[0]), int(parts[1]) + 1)]
+            )
+            
     if args.info:
         logger.info('Getting manga info...')
         stats = mlp.get_manga_stats(
@@ -207,30 +229,6 @@ Is licensed     : {manga_is_licensed}
 Status          : {manga_status}
 Release date    : {manga_release}
              """)
-                
-    if args.chapters:
-        chapters = str(args.chapters).strip()
-        logger.info(f'Setted chapter(s): {chapters}')
-        
-        parts = chapters.split('-')
-        
-        if (len(parts) not in (1,2) or not all([i.isdigit() for i in parts]) or int(parts[0]) < 1):
-            raise InvalidChaptersError(f'Invalid chapter(s) integer/range: {chapters}')
-        
-        if len(parts) == 1:
-            mlp.download(
-                manga_url=args.url,
-                chapters=[int(parts[0])],
-            )
-        
-        elif len(parts) == 2:
-            mlp.download(
-                manga_url=args.url,
-                chapters=[i for i in range(int(parts[0]), int(parts[1]) + 1)]
-            )
-            
-
-    
     
 if __name__ == '__main__':
     main()
