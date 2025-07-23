@@ -43,6 +43,8 @@ pip install -r requirements.txt
 ```
 
 ### Linux
+
+You can just use [install.sh script](install.sh) or install step-by-step:
 1. Clone the repository:
 ```bash
 git clone https://github.com/wandderq/MangaLibParser
