@@ -1,15 +1,15 @@
 import os
 import re
 import sys
-import json
 import cloudscraper
 import validators
 import logging as lg
+import unicodedata
 
+from PIL import Image
+from io import BytesIO
 from requests import RequestException
 from argparse import ArgumentParser
-
-from pdf_saver import save_chapter_as_pdf
 
 MANGALIB_API_URL = 'https://api2.mangalib.me/api/manga'
 IMGLIB_URL = 'https://img2.imglib.info/'
@@ -17,14 +17,7 @@ REQUEST_ATTEMPTS_LIMIT = 3
 
 logger = lg.getLogger('mlibparser')
 
-formatter = lg.Formatter('[%(asctime)s: %(levelname)s] [%(name)s] %(message)s')
-
-stream_handler = lg.StreamHandler(stream=sys.stdout)
-stream_handler.setFormatter(formatter)
-
 class InvalidUrlError(Exception): ...
-class InvalidChaptersError(Exception): ...
-class MangaLibParserError(Exception): ...
 
 class MangaLibParser:
     def __init__(self) -> None:
@@ -36,6 +29,28 @@ class MangaLibParser:
             },
             delay=3
         )
+    
+    def __sanitize_chapter_name(self, filename, replace_with=" "):
+        filename = unicodedata.normalize("NFKD", filename)
+        
+        filename = "".join(c for c in filename if not unicodedata.category(c).startswith("C"))
+        
+        forbidden_chars = r'<>:"/\|?*\0'
+        for char in forbidden_chars:
+            filename = filename.replace(char, replace_with)
+        
+        filename = filename.strip(". ")
+        
+        filename = re.sub(r"_+", "_", filename)
+        
+        if not filename:
+            filename = "unnamed"
+        
+        max_length = 255
+        if len(filename) > max_length:
+            filename = filename[:max_length].rstrip(". ")
+        
+        return filename
     
     def __make_request(self, url: str, params = None) -> dict:
         for attempt in range(1, REQUEST_ATTEMPTS_LIMIT + 1):
@@ -60,7 +75,7 @@ class MangaLibParser:
         
         match = re.search(r'/manga/(\d+--[^/?]+)', manga_url)
         if not match:
-            raise MangaLibParserError(f'Invalid MangaLib URL: {manga_url}')
+            raise InvalidUrlError(f'Invalid MangaLib URL: {manga_url}')
         
         return match.group(1)
     
@@ -90,78 +105,165 @@ class MangaLibParser:
         data = self.__make_request(pages_url, params)
         return [f"{IMGLIB_URL}{page['url']}" for page in data['data']['pages']]
     
-    def __download_pages(self, pages: list, output_dir: str) -> None:
-        downloaded = 0
-        downloaded_pages = [os.path.splitext(filename)[0] for filename in os.listdir(output_dir) if os.path.splitext(filename)[1].lower() in ('.jpeg', '.jpg', '.png','.webp')]
+    def __download_pages(self, url_slug: str, volume: int, chapter: int, chapter_dir: str, manga_dir: str, save_as_pdf: bool, pdf_name: str | None = None) -> None:
+        pages_url = f'{MANGALIB_API_URL}/{url_slug}/chapter'
+        params = {'number': chapter, 'volume': volume}
+        data = self.__make_request(pages_url, params)
+        pages = [f"{IMGLIB_URL}{page['url']}" for page in data['data']['pages']]
         
+        # downloaded_pages = [os.path.splitext(filename)[0] for filename in os.listdir(output_dir) if os.path.splitext(filename)[1].lower() in ('.jpeg', '.jpg', '.png','.webp')]
+        
+        downloaded_pages = None
+        downloaded_chapters = None
+        
+        if not save_as_pdf:
+            downloaded_pages = [
+                os.path.splitext(filename)[0]
+                for filename in os.listdir(chapter_dir)
+                if os.path.splitext(filename)[1].lower() in ('.jpg', '.png', '.webp')
+            ]
+        else:
+            downloaded_chapters = [
+                os.path.splitext(filename)[0]
+                for filename in os.listdir(manga_dir)
+                if os.path.splitext(filename)[1].lower() == '.pdf'
+            ]
+        
+        pdf_images = []
         for id, url in enumerate(pages, 1):
             try:
-                if str(id) in downloaded_pages:
+                if not save_as_pdf:
+                    if str(id) in downloaded_pages: # type: ignore
+                        logger.debug(f'Page {id} from chapter {chapter} alreday downloaded')
+                        continue
+                else:
+                    if pdf_name in downloaded_chapters: # type: ignore
+                        logger.debug(f'Chapter {chapter} alreday downloaded')
+                        break
+                
+                responce = self.__scraper.get(url)
+                if responce.status_code == 200:
+                    if save_as_pdf:
+                        img = Image.open(BytesIO(responce.content))
+                        if img.mode in ("RGBA", "P"):
+                            img = img.convert("RGB")
+                        
+                        pdf_images.append(img)
+                    
+                    else:
+                        ext = '.png' if '.png' in url else '.jpg' if '.jpg' in url else '.webp' if '.webp' in url else '.jpg'
+                        image_path = os.path.join(chapter_dir, f"{id}{ext}")
+                        with open(image_path, 'wb') as page:
+                            page.write(responce.content)
+                            logger.debug(f'Page {id} downloaded')
+                
+                else:
+                    logger.error(f'Unable to download page {id} from chapter{chapter} due to bad status code: {responce.status_code}')
                     continue
                 
-                resp = self.__scraper.get(url)
-                if resp.status_code == 200:
-                    ext = '.png' if '.png' in url else '.jpg' if '.jpg' in url else '.webp' if '.webp' in url else '.jpg'
-                    image_path = os.path.join(output_dir, f"{id}{ext}")
-                    with open(image_path, 'wb') as file:
-                        file.write(resp.content)
-                    downloaded += 1
+                
+                # if str(id) in downloaded_pages:
+                #     continue
+                
+                # resp = self.__scraper.get(url)
+                # if resp.status_code == 200:
+                #     ext = '.png' if '.png' in url else '.jpg' if '.jpg' in url else '.webp' if '.webp' in url else '.jpg'
+                #     image_path = os.path.join(output_dir, f"{id}{ext}")
+                #     with open(image_path, 'wb') as file:
+                #         file.write(resp.content)
+                #     downloaded += 1
             
             except Exception as e:
-                print(e)
-    
-    def download(
+                logger.error(f'Error when downloading pages: {e}')
+        
+        if pdf_images:
+            pdf_images[0].save(
+                os.path.join(manga_dir, f'{pdf_name}.pdf'),
+                "PDF",
+                resolution=100.0,
+                save_all=True,
+                append_images=pdf_images[1:]
+            )
+    def parse_chapters(
             self,
             manga_url: str,
             chapters: list,
             output_dir: str = 'Manga',
-            pdf: bool = False
+            save_as_pdf: bool = False,
+            simple_chapter_name: bool = False
         ) -> None:
         
         if not chapters:
-            raise MangaLibParserError('Chapters list cannot be empty')
-        if not output_dir:
-            output_dir = 'Manga'
+            raise ValueError('Chapters list cannot be empty')
         
         url_slug = self.__parse_mangalib_url(manga_url)
         logger.info(f'Downloading manga: {url_slug}, chapters: {chapters}')
         
         manga_stats = self.get_manga_stats(manga_url)
         manga_name = str(manga_stats['data']['name']).lower().replace(' ', '_')
-        manga_dir = os.path.join(output_dir, manga_name)
         
         chapters_info = self.__get_chapters_info(url_slug)
         if chapters_info is None:
             return
-        chapters_info = {item['index']: item for item in chapters_info['data']}
-        max_chapters = len(chapters_info)
         
+        chapters_info = {item['index']: item for item in chapters_info['data']}
+        # max_chapters = len(chapters_info)
+        
+        manga_dir = os.path.join(output_dir, manga_name)
         os.makedirs(manga_dir, exist_ok=True)
+        
         for chapter in chapters:
             try:
                 chapter_info = chapters_info[chapter]
+                chapter_original_name = chapter_info['name']
+                chapter_original_number = chapter_info['number']
+                chapter_original_volume = chapter_info['volume']
                 
-                chapter_orig_name = chapter_info['name']
-                chapter_orig_number = chapter_info['number']
-                chapter_orig_volume = chapter_info['volume']
+                if not simple_chapter_name:
+                    chapter_name = f'Chapter {chapter_original_number}'
+                    if str(chapter_original_name).strip():
+                        sanitized_name = self.__sanitize_chapter_name(str(chapter_original_name).strip())
+                        chapter_name += f' - {sanitized_name}'
+                else:
+                    chapter_name = f'chapter-{chapter_original_number}'
                 
-                chapter_dir_name = f'Chapter {chapter_orig_number}' +  (f' - {chapter_orig_name}' if str(chapter_orig_name).strip() else '')
-                if os.path.exists(os.path.join(manga_dir, f'{chapter_dir_name}.pdf')) and pdf:
-                    logger.debug(f'Chapter {chapter} alreday downloaded in pdf format')
+                chapter_dirname = os.path.join(manga_dir, chapter_name)
+                
+                if not save_as_pdf:
+                    os.makedirs(chapter_dirname, exist_ok=True)
+                
+                self.__download_pages(
+                    url_slug=url_slug,
+                    volume=chapter_original_volume,
+                    chapter=chapter_original_number,
+                    chapter_dir=chapter_dirname,
+                    manga_dir=manga_dir,
+                    save_as_pdf=save_as_pdf,
+                    pdf_name=chapter_name
+                )
+                
+                # chapter_orig_name = chapter_info['name']
+                # chapter_orig_number = chapter_info['number']
+                # chapter_orig_volume = chapter_info['volume']
+                
+                # chapter_dir_name = f'Chapter {chapter_orig_number}' +  (f' - {chapter_orig_name}' if str(chapter_orig_name).strip() else '')
                     
-                chapter_dir = os.path.join(manga_dir, chapter_dir_name)
-                os.makedirs(chapter_dir, exist_ok=True)
+                # chapter_dir = os.path.join(manga_dir, chapter_dir_name)
+                # os.makedirs(chapter_dir, exist_ok=True)
                 
-                pages = self.__get_chapter_pages(url_slug, chapter_orig_volume, chapter_orig_number)
-                self.__download_pages(pages, chapter_dir)
-                
-                if pdf:
-                    save_chapter_as_pdf(chapter_dir=chapter_dir, chapter_name=chapter_dir_name)
+                # pages = self.__get_chapter_pages(url_slug, chapter_orig_volume, chapter_orig_number)
+                # self.__download_pages(pages, chapter_dir)
                 
             except KeyError:
                 logger.error(f'Chapter {chapter} not found')
-        
+
+
 def main() -> None:
+    global logger
+    
+    formatter = lg.Formatter('[%(asctime)s: %(levelname)s] [%(name)s] %(message)s')
+    stream_handler = lg.StreamHandler(stream=sys.stdout)
+    stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
     
     argparser = ArgumentParser(
@@ -179,6 +281,7 @@ def main() -> None:
     argparser.add_argument('-i', '--info', action='store_true', help='Shows manga info')
     argparser.add_argument('-o', '--output-dir', default='Manga', type=str, help='Output directory, defaults setted to \'Manga\'. Downloading like this: /output/path/manga-name/chapters... ')
     argparser.add_argument('--pdf', action='store_true', help='Save manga chapters in .pdf format')
+    argparser.add_argument('-s', '--simple-names', action='store_true', help='Use simple names for chapters')
     
     args = argparser.parse_args()
     mlp = MangaLibParser()
@@ -188,7 +291,6 @@ def main() -> None:
     
     if not args.chapters and not args.info:
         logger.warning('Nothing to do!')
-    
                 
     if args.chapters:
         chapters = str(args.chapters).strip()
@@ -197,24 +299,26 @@ def main() -> None:
         parts = chapters.split('-')
         
         if (len(parts) not in (1,2) or not all([i.isdigit() for i in parts]) or int(parts[0]) < 1):
-            raise InvalidChaptersError(f'Invalid chapter(s) integer/range: {chapters}')
+            raise ValueError(f'Invalid chapter(s) integer/range: {chapters}')
         
         os.makedirs(args.output_dir, exist_ok=True)
         
         if len(parts) == 1:
-            mlp.download(
+            mlp.parse_chapters(
                 manga_url=args.url,
                 chapters=[int(parts[0])],
                 output_dir=args.output_dir,
-                pdf=args.pdf
+                save_as_pdf=args.pdf,
+                simple_chapter_name=args.simple_names
             )
         
         elif len(parts) == 2:
-            mlp.download(
+            mlp.parse_chapters(
                 manga_url=args.url,
                 chapters=[i for i in range(int(parts[0]), int(parts[1]) + 1)],
                 output_dir=args.output_dir,
-                pdf=args.pdf
+                save_as_pdf=args.pdf,
+                simple_chapter_name=args.simple_names
             )
             
     if args.info:
