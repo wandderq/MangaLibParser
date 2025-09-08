@@ -1,5 +1,7 @@
 # MangaLibParser
 
+# !!! temporarily down because the API is closed
+
 MangaLibParser is a Python-based manga scraper for downloading manga from [mangalib.me](https://mangalib.me). The tool saves manga chapters locally as images and offers PDF conversion functionality (Work in Progress).
 
 ## Features
